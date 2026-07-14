@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<!--
+  nbody-sim trajectory player — nbody-history/1 schema (SPEC §4.2b, §9).
+  Single file, zero dependencies. Loads data three ways:
+    1. auto-fetch of data/cluster_merger.json (works over http:// and on GitHub Pages),
+    2. drag & drop of any nbody-history JSON onto the window (works over file://),
+    3. the "load JSON" file picker.
+  Rendering: physical positions live in one Float64Array; each animation frame LERPs
+  between the two neighbouring samples into a preallocated scratch buffer (no GC churn)
+  and draws via batched canvas paths. Camera is an affine world->screen map with y-flip.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nbody-sim player</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --edge: #30363d; --text: #c9d1d9;
+    --dim: #8b949e; --accent: #58a6ff; --green: #3fb950; --red: #f85149;
+    --amber: #d29922; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--edge);
+  }
+  header h1 { font-size: 15px; font-weight: 600; }
+  header h1 span { color: var(--dim); font-weight: 400; }
+  .stats { display: flex; gap: 16px; margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .stats b { color: var(--text); font-weight: 600; }
+  #view { flex: 1; min-height: 0; position: relative; }
+  #sky { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+  #sky.panning { cursor: grabbing; }
+  #controls {
+    display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+    background: var(--panel); border-top: 1px solid var(--edge);
+  }
+  button, select, .filelabel {
+    background: #21262d; color: var(--text); border: 1px solid var(--edge);
+    border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover, select:hover, .filelabel:hover { border-color: var(--accent); }
+  button.primary { min-width: 74px; }
+  label.toggle { display: flex; gap: 6px; align-items: center; color: var(--dim); font-size: 13px; cursor: pointer; }
+  #timeline { flex: 1; accent-color: var(--accent); }
+  #frameinfo { font-family: var(--mono); font-size: 12px; color: var(--dim); min-width: 210px; text-align: right; }
+  #chartwrap { height: 150px; background: var(--panel); border-top: 1px solid var(--edge); position: relative; }
+  #chart { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #drop {
+    position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(13,17,23,.88); z-index: 10; text-align: center; color: var(--dim);
+    border: 2px dashed var(--edge); font-size: 15px; pointer-events: none;
+  }
+  #drop.visible { display: flex; }
+  #drop b { color: var(--text); }
+  .legend { position: absolute; top: 10px; left: 12px; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 4px 0 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>nbody-sim <span>· trajectory player · nbody-history/1</span></h1>
+  <div class="stats">
+    <span>bodies <b id="s-n">–</b></span>
+    <span>escapers <b id="s-esc">–</b></span>
+    <span>render <b id="s-fps">–</b> fps</span>
+  </div>
+</header>
+
+<div id="view">
+  <canvas id="sky"></canvas>
+  <div class="legend">cluster A<i style="background:var(--green)"></i>cluster B<i style="background:var(--red)"></i>escaper (v &gt; 4×median)<i style="background:var(--amber)"></i></div>
+  <div id="drop"><div><b>Drop an nbody-history JSON here</b><br>(or use “load JSON” below — e.g. experiments/out/cluster_merger.json)</div></div>
+</div>
+
+<div id="controls">
+  <button id="play" class="primary">▶ play</button>
+  <label class="toggle"><input type="checkbox" id="loop" checked> loop</label>
+  <select id="speed">
+    <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option>
+  </select>
+  <input id="timeline" type="range" min="0" max="1" step="any" value="0">
+  <span id="frameinfo">–</span>
+  <label class="filelabel">load JSON<input id="file" type="file" accept=".json" hidden></label>
+</div>
+
+<div id="chartwrap"><canvas id="chart"></canvas></div>
+
+<script>
+"use strict";
+
+/* ---------- constants & state ---------------------------------------- */
+const BASE_SAMPLES_PER_S = 30;           // playback rate at 1x
+const ESCAPER_FACTOR = 4;                // v > 4 x median(frame speeds)
+const COLORS = { a: "#3fb950", b: "#f85149", esc: "#d29922", cursor: "#f85149" };
+
+const S = {
+  d: null,               // parsed dataset
+  f: 0,                  // fractional sample index
+  playing: false, loop: true, speed: 1,
+  cam: { scale: 100, cx: 0, cy: 0 },
+  scratch: null,         // Float64Array(n*3) — LERPed positions
+  speeds: null,          // Float64Array(n) — |v| at floor(f), central differences
+  escMask: null,         // Uint8Array(n)
+  speedsFrame: -1,       // which integer frame `speeds` describes
+  fps: 0, lastT: 0,
+};
+
+/* ---------- data ------------------------------------------------------ */
+function parseHistory(j) {
+  if (j.schema !== "nbody-history/1") throw new Error("unsupported schema: " + j.schema);
+  const n = j.n | 0, k = j.k | 0;
+  const d = {
+    n, k, meta: j.meta || {},
+    time: Float64Array.from(j.time),
+    mass: Float64Array.from(j.mass),
+    pos: Float64Array.from(j.pos),               // (k*n + i)*3 + c
+    energy: Float64Array.from(j.energy),
+    kinetic: j.kinetic ? Float64Array.from(j.kinetic) : null,
+  };
+  if (d.pos.length !== k * n * 3) throw new Error("pos length mismatch");
+  d.nA = d.meta.n_each ? d.meta.n_each | 0 : (n >> 1);   // population split
+  d.potential = d.kinetic ? d.energy.map((e, i) => e - d.kinetic[i]) : null;
+  return d;
+}
+
+function setData(d) {
+  S.d = d; S.f = 0; S.playing = false;
+  S.scratch = new Float64Array(d.n * 3);
+  S.speeds = new Float64Array(d.n);
+  S.escMask = new Uint8Array(d.n);
+  S.speedsFrame = -1;
+  document.getElementById("s-n").textContent = d.n;
+  document.getElementById("timeline").max = String(d.k - 1);
+  document.getElementById("drop").classList.remove("visible");
+  fitView();
+  buildChartGeometry();
+  updatePlayButton();
+}
+
+async function tryAutoLoad() {
+  try {
+    const r = await fetch("data/cluster_merger.json");
+    if (!r.ok) throw 0;
+    setData(parseHistory(await r.json()));
+  } catch {
+    document.getElementById("drop").classList.add("visible"); // file:// path: ask for a drop
+  }
+}
+
+function loadFile(file) {
+  const rd = new FileReader();
+  rd.onload = () => { try { setData(parseHistory(JSON.parse(rd.result))); } catch (e) { alert("Load failed: " + e.message); } };
+  rd.readAsText(file);
+}
+
+/* ---------- camera: world -> screen (y flipped) ----------------------- */
+const sky = document.getElementById("sky"), ctx = sky.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  W = sky.clientWidth; H = sky.clientHeight;
+  sky.width = Math.round(W * DPR); sky.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  sizeChart();
+}
+window.addEventListener("resize", resize);
+
+const toX = wx => W / 2 + (wx - S.cam.cx) * S.cam.scale;
+const toY = wy => H / 2 - (wy - S.cam.cy) * S.cam.scale;
+
+function fitView() {
+  const d = S.d; if (!d) return;
+  let lo = Infinity, hi = -Infinity;                  // frame-0 bounds, x & y
+  for (let i = 0; i < d.n; i++) {
+    const x = d.pos[i * 3], y = d.pos[i * 3 + 1];
+    lo = Math.min(lo, x, y); hi = Math.max(hi, x, y);
+  }
+  const span = Math.max(hi - lo, 1e-9) * 1.25;
+  S.cam.scale = Math.min(W, H) / span;
+  S.cam.cx = 0; S.cam.cy = 0;
+}
+
+/* pan / zoom / reset */
+let pan = null;
+sky.addEventListener("pointerdown", e => { pan = { x: e.clientX, y: e.clientY }; sky.classList.add("panning"); sky.setPointerCapture(e.pointerId); });
+sky.addEventListener("pointermove", e => {
+  if (!pan) return;
+  S.cam.cx -= (e.clientX - pan.x) / S.cam.scale;
+  S.cam.cy += (e.clientY - pan.y) / S.cam.scale;
+  pan = { x: e.clientX, y: e.clientY };
+});
+sky.addEventListener("pointerup", () => { pan = null; sky.classList.remove("panning"); });
+sky.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = sky.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const wx = S.cam.cx + (mx - W / 2) / S.cam.scale;   // world point under cursor…
+  const wy = S.cam.cy - (my - H / 2) / S.cam.scale;
+  const zoom = Math.exp(-e.deltaY * 0.0015);
+  S.cam.scale = Math.min(1e6, Math.max(1e-3, S.cam.scale * zoom));
+  S.cam.cx = wx - (mx - W / 2) / S.cam.scale;         // …stays under the cursor
+  S.cam.cy = wy + (my - H / 2) / S.cam.scale;
+}, { passive: false });
+sky.addEventListener("dblclick", fitView);
+
+/* ---------- playback & per-frame physics ------------------------------ */
+function refreshSpeeds(k0) {
+  // |v| via central differences of the SAMPLED positions (coarse-grained by
+  // record_every — documented approximation, SPEC §9); ends use one-sided diffs.
+  const d = S.d, n = d.n;
+  const ka = Math.max(0, k0 - 1), kb = Math.min(d.k - 1, k0 + 1);
+  const dt = d.time[kb] - d.time[ka] || 1;
+  const A = ka * n * 3, B = kb * n * 3;
+  for (let i = 0; i < n; i++) {
+    const dx = d.pos[B + i * 3] - d.pos[A + i * 3];
+    const dy = d.pos[B + i * 3 + 1] - d.pos[A + i * 3 + 1];
+    const dz = d.pos[B + i * 3 + 2] - d.pos[A + i * 3 + 2];
+    S.speeds[i] = Math.hypot(dx, dy, dz) / dt;
+  }
+  const med = median(S.speeds);
+  let esc = 0;
+  for (let i = 0; i < n; i++) { S.escMask[i] = S.speeds[i] > ESCAPER_FACTOR * med ? 1 : 0; esc += S.escMask[i]; }
+  document.getElementById("s-esc").textContent = esc;
+  S.speedsFrame = k0;
+}
+const _medScratch = { buf: null };
+function median(arr) {
+  if (!_medScratch.buf || _medScratch.buf.length !== arr.length) _medScratch.buf = new Float64Array(arr.length);
+  _medScratch.buf.set(arr);
+  const b = _medScratch.buf.sort();
+  return b[b.length >> 1] || 1e-30;
+}
+
+function lerpFrame() {
+  const d = S.d, n = d.n;
+  const k0 = Math.min(Math.floor(S.f), d.k - 1), k1 = Math.min(k0 + 1, d.k - 1);
+  const a = S.f - k0, A = k0 * n * 3, B = k1 * n * 3, P = S.scratch;
+  for (let j = 0; j < n * 3; j++) P[j] = (1 - a) * d.pos[A + j] + a * d.pos[B + j];
+  if (S.speedsFrame !== k0) refreshSpeeds(k0);
+  return k0;
+}
+
+/* ---------- rendering -------------------------------------------------- */
+function drawBodies() {
+  const d = S.d, n = d.n, P = S.scratch;
+  ctx.clearRect(0, 0, W, H);
+  drawScaleBar();
+  const groups = [
+    { color: COLORS.a, from: 0, to: d.nA, r: 1.6 },
+    { color: COLORS.b, from: d.nA, to: n, r: 1.6 },
+  ];
+  for (const g of groups) {
+    ctx.beginPath();
+    for (let i = g.from; i < g.to; i++) {
+      if (S.escMask[i]) continue;
+      const x = toX(P[i * 3]), y = toY(P[i * 3 + 1]);
+      if (x < -4 || x > W + 4 || y < -4 || y > H + 4) continue;
+      ctx.moveTo(x + g.r, y); ctx.arc(x, y, g.r, 0, 6.2832);
+    }
+    ctx.fillStyle = g.color; ctx.fill();
+  }
+  ctx.beginPath();                                    // escapers: amber, ringed
+  for (let i = 0; i < n; i++) {
+    if (!S.escMask[i]) continue;
+    const x = toX(P[i * 3]), y = toY(P[i * 3 + 1]);
+    if (x < -6 || x > W + 6 || y < -6 || y > H + 6) continue;
+    ctx.moveTo(x + 2.2, y); ctx.arc(x, y, 2.2, 0, 6.2832);
+  }
+  ctx.fillStyle = COLORS.esc; ctx.fill();
+}
+
+function drawScaleBar() {
+  const target = 110 / S.cam.scale;                    // ~110 px in world units
+  const pow = Math.pow(10, Math.floor(Math.log10(target)));
+  const nice = [1, 2, 5, 10].map(m => m * pow).reduce((p, c) => Math.abs(c - target) < Math.abs(p - target) ? c : p);
+  const px = nice * S.cam.scale;
+  ctx.strokeStyle = "#8b949e"; ctx.fillStyle = "#8b949e"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(14, H - 16); ctx.lineTo(14 + px, H - 16); ctx.stroke();
+  ctx.font = "11px " + getComputedStyle(document.body).getPropertyValue("--mono");
+  ctx.fillText(nice.toPrecision(3).replace(/\.?0+$/, "") + " AU", 16, H - 22);
+}
+
+/* ---------- energy chart ----------------------------------------------- */
+const chart = document.getElementById("chart"), cctx = chart.getContext("2d");
+let CW = 0, CH = 0, chartRange = null;
+const PADL = 56, PADR = 12, PADT = 10, PADB = 18;
+
+function sizeChart() {
+  CW = chart.clientWidth; CH = chart.clientHeight;
+  chart.width = Math.round(CW * DPR); chart.height = Math.round(CH * DPR);
+  cctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+function buildChartGeometry() {
+  const d = S.d; if (!d) return;
+  let lo = Infinity, hi = -Infinity;
+  const scan = arr => { for (const v of arr) { if (v < lo) lo = v; if (v > hi) hi = v; } };
+  scan(d.energy); if (d.kinetic) { scan(d.kinetic); scan(d.potential); }
+  const pad = (hi - lo) * 0.08 || 1;
+  chartRange = { lo: lo - pad, hi: hi + pad, t0: d.time[0], t1: d.time[d.k - 1] };
+}
+const cx_ = t => PADL + (t - chartRange.t0) / (chartRange.t1 - chartRange.t0) * (CW - PADL - PADR);
+const cy_ = v => PADT + (chartRange.hi - v) / (chartRange.hi - chartRange.lo) * (CH - PADT - PADB);
+
+function drawChart(k0) {
+  const d = S.d; if (!d || !chartRange) return;
+  cctx.clearRect(0, 0, CW, CH);
+  cctx.font = "10px " + getComputedStyle(document.body).getPropertyValue("--mono");
+  if (chartRange.lo < 0 && chartRange.hi > 0) {        // zero line
+    cctx.strokeStyle = "#30363d"; cctx.setLineDash([4, 4]);
+    cctx.beginPath(); cctx.moveTo(PADL, cy_(0)); cctx.lineTo(CW - PADR, cy_(0)); cctx.stroke();
+    cctx.setLineDash([]);
+  }
+  const series = [{ arr: d.energy, col: "#58a6ff", name: "E total" }];
+  if (d.kinetic) series.push({ arr: d.kinetic, col: "#3fb950", name: "T kinetic" },
+                             { arr: d.potential, col: "#d29922", name: "V potential" });
+  series.forEach((s, si) => {
+    cctx.strokeStyle = s.col; cctx.lineWidth = 1.2; cctx.beginPath();
+    for (let i = 0; i < d.k; i++) {
+      const x = cx_(d.time[i]), y = cy_(s.arr[i]);
+      i ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
+    }
+    cctx.stroke();
+    cctx.fillStyle = s.col; cctx.fillText(s.name, PADL + 8 + si * 86, PADT + 8);
+  });
+  cctx.fillStyle = "#8b949e";                          // y extremes + x label
+  cctx.fillText(chartRange.hi.toPrecision(3), 4, PADT + 8);
+  cctx.fillText(chartRange.lo.toPrecision(3), 4, CH - PADB);
+  cctx.fillText("t [yr]", CW - PADR - 34, CH - 5);
+  const tNow = d.time[k0] + (S.f - k0) * ((d.time[Math.min(k0 + 1, d.k - 1)] - d.time[k0]) || 0);
+  cctx.strokeStyle = COLORS.cursor; cctx.lineWidth = 1;  // sync cursor
+  cctx.beginPath(); cctx.moveTo(cx_(tNow), PADT); cctx.lineTo(cx_(tNow), CH - PADB); cctx.stroke();
+}
+
+/* ---------- main loop --------------------------------------------------- */
+function tick(t) {
+  requestAnimationFrame(tick);
+  const dt = Math.min(0.1, (t - S.lastT) / 1000 || 0); S.lastT = t;
+  S.fps = S.fps * 0.9 + (dt > 0 ? 0.1 / dt : 0);
+  if (!S.d) return;
+  if (S.playing) {
+    S.f += dt * S.speed * BASE_SAMPLES_PER_S;
+    if (S.f >= S.d.k - 1) {
+      if (S.loop) S.f = 0;
+      else { S.f = S.d.k - 1; S.playing = false; updatePlayButton(); }
+    }
+  }
+  const k0 = lerpFrame();
+  drawBodies();
+  drawChart(k0);
+  document.getElementById("timeline").value = String(S.f);
+  const tNow = S.d.time[k0];
+  document.getElementById("frameinfo").textContent =
+    `sample ${k0 + 1}/${S.d.k} · t = ${tNow.toFixed(3)} yr`;
+  document.getElementById("s-fps").textContent = S.fps.toFixed(0);
+}
+
+/* ---------- controls ----------------------------------------------------- */
+const playBtn = document.getElementById("play");
+function updatePlayButton() { playBtn.textContent = S.playing ? "⏸ pause" : "▶ play"; }
+playBtn.onclick = () => { if (!S.d) return; if (!S.playing && S.f >= S.d.k - 1) S.f = 0; S.playing = !S.playing; updatePlayButton(); };
+document.getElementById("loop").onchange = e => S.loop = e.target.checked;
+document.getElementById("speed").onchange = e => S.speed = parseFloat(e.target.value);
+document.getElementById("timeline").oninput = e => { S.f = parseFloat(e.target.value); };
+document.getElementById("file").onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.code === "Space") { e.preventDefault(); playBtn.onclick(); }
+  if (e.code === "ArrowRight") S.f = Math.min((S.d?.k ?? 1) - 1, Math.floor(S.f) + 1);
+  if (e.code === "ArrowLeft") S.f = Math.max(0, Math.ceil(S.f) - 1);
+});
+["dragover", "drop"].forEach(ev => window.addEventListener(ev, e => e.preventDefault()));
+window.addEventListener("drop", e => e.dataTransfer.files[0] && loadFile(e.dataTransfer.files[0]));
+
+/* ---------- boot ---------------------------------------------------------- */
+resize();
+tryAutoLoad();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

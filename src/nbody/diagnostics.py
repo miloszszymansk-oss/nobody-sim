@@ -13,6 +13,11 @@ from nbody.bodies import System
 from nbody.constants import G_ASTRO
 
 
+def kinetic_energy(s: System) -> float:
+    """T = sum_i m_i |v_i|^2 / 2."""
+    return 0.5 * float(np.sum(s.mass * np.einsum("ij,ij->i", s.vel, s.vel)))
+
+
 def total_energy(s: System, G: float = G_ASTRO, eps: float = 0.0) -> float:
     """E = sum_i m_i |v_i|^2 / 2  -  G sum_{i<j} m_i m_j / sqrt(|r_i - r_j|^2 + eps^2)."""
     kinetic = 0.5 * float(np.sum(s.mass * np.einsum("ij,ij->i", s.vel, s.vel)))

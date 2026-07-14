@@ -26,7 +26,10 @@ def test_history_json_roundtrip():
     assert len(j["mass"]) == n
     assert len(j["pos"]) == k * n * 3
     assert len(j["energy"]) == k
+    assert len(j["kinetic"]) == k
     assert len(j["angular_momentum"]) == k * 3
+    # physical consistency of the split: V = E - T must be negative for a bound orbit
+    assert all(e - t < 0 for e, t in zip(j["energy"], j["kinetic"]))
     assert j["meta"]["experiment"] == "unit"
 
     # flatten order contract: pos[(k*n + i)*3 + c]

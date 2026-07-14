@@ -253,6 +253,18 @@ nbody-sim/
 
 ---
 
+## 9. Odtwarzacz trajektorii (D4): `visualization/player.html`
+
+Jeden plik, zero zależności (decyzja: Tailwind-CDN odrzucony — odtwarzacz musi działać z `file://` offline). Konsumuje `nbody-history/1` (§4.2b).
+
+**Ładowanie danych (3 ścieżki):** auto-`fetch` z `visualization/data/` (http/GitHub Pages) → drag&drop pliku na okno (jedyna niezawodna droga przy `file://`, CORS blokuje fetch z dysku) → file picker.
+
+**Model stanu:** pojedynczy obiekt `S { d, f, playing, loop, speed, cam, scratch, speeds, escMask }`, gdzie `f` to UŁAMKOWY indeks próbki — klatka ekranowa = LERP między próbkami ⌊f⌋ i ⌊f⌋+1 do prealokowanego `Float64Array` (zero alokacji w pętli rAF → brak przystanków GC przy 60 fps).
+
+**Mapowanie JSON → bufory:** płaskie `pos` parsowane raz przez `Float64Array.from`; adresowanie `(k·n + i)·3 + c` bez reshape'u. Kamera: afiniczne world→screen `sx = W/2 + (x−cx)·scale`, `sy = H/2 − (y−cy)·scale` (flip y), zoom kotwiczony w kursorze (punkt świata pod kursorem jest niezmiennikiem), skala rysowana jako belka 1-2-5.
+
+**Analityka w locie:** prędkości NIE są w schemie — estymata różnicami centralnymi między próbkami (dokumentowane przybliżenie: uśrednienie po `record_every` kroków); uciekinierzy: |v| > 4×mediana klatki (odporna na ogony), rysowani bursztynem. Wykres T/V/E: T z pola `kinetic` (0.5 → opcjonalne w schemie), V = E − T po stronie JS; czerwony kursor czasu zsynchronizowany z `f`.
+
 ## 8. Decyzje (zamknięte w 0.2)
 
 1. Softening gromad: ε = 0.05·R/N^(1/3) — PRZYJĘTE.
@@ -260,6 +272,10 @@ nbody-sim/
 3. Nazwa repo: `nbody-sim`. PRZYJĘTE.
 
 ## Changelog
+- 0.5 (D4: odtwarzacz):
+  - §9: architektura frontendu (stan, LERP na TypedArrays, kamera, 3 ścieżki ładowania). Decyzje vs brief: zero CDN (offline/file://), prędkości z różnic centralnych (schema nie niesie v), highlight uciekinierów progiem 4×mediana.
+  - Schema: +opcjonalne pole `kinetic` [k] (History.kinetic, diagnostics.kinetic_energy); test round-trip sprawdza spójność V=E−T<0 dla orbity związanej. Dane demo: visualization/data/cluster_merger.json (4.1 MB, commitowane dla GitHub Pages).
+  - Walidacja: node --check na wyekstrahowanym JS, pola schemy zweryfikowane względem danych. Suita: 30/30.
 - 0.4 (D3: profiling, Plummer, eksport JSON):
   - PROFILING (benchmarks/profile_bh.py, raport w benchmarks/out/): metodologia = cProfile/pstats + A/B na identycznych wejściach. DWIE hipotezy sfalsyfikowane pomiarem:
     (1) hipoteza briefu "sortowanie dominuje budowę": grouping przyspieszony 2.52× (jeden argsort zamiast unique+argsort, `_group_keys` reużywa `order` w CSR), ALE build to 2% pełnego accel, sortowania 1.0% całości — zysk realny, wpływ marginalny;

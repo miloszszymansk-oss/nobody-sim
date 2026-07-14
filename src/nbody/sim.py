@@ -36,7 +36,8 @@ class Config:
 class History:
     time: np.ndarray  # (K,)
     pos: np.ndarray  # (K,N,3)
-    energy: np.ndarray  # (K,)
+    energy: np.ndarray  # (K,) total E (with the same eps as forces, SPEC §1.2)
+    kinetic: np.ndarray  # (K,) T; the player derives V = E - T (SPEC §4.2b)
     angular_momentum: np.ndarray  # (K,3)
     mass: np.ndarray  # (N,)
 
@@ -59,6 +60,7 @@ class History:
             "mass": self.mass.tolist(),
             "pos": np.round(self.pos, decimals).ravel().tolist(),
             "energy": self.energy.tolist(),
+            "kinetic": self.kinetic.tolist(),
             "angular_momentum": np.round(self.angular_momentum, 10).ravel().tolist(),
         }
         with open(path, "w") as f:
@@ -81,6 +83,7 @@ def run(system: System, cfg: Config) -> History:
     time = np.empty(k_samples)
     pos_hist = np.empty((k_samples, mass.shape[0], 3))
     energy = np.empty(k_samples)
+    kinetic = np.empty(k_samples)
     ang_mom = np.empty((k_samples, 3))
 
     def record(idx: int, t: float, p: np.ndarray, v: np.ndarray) -> None:
@@ -88,6 +91,7 @@ def run(system: System, cfg: Config) -> History:
         time[idx] = t
         pos_hist[idx] = p
         energy[idx] = diag.total_energy(snap, cfg.G, cfg.eps)
+        kinetic[idx] = diag.kinetic_energy(snap)
         ang_mom[idx] = diag.angular_momentum(snap)
 
     record(0, 0.0, pos, vel)
@@ -111,4 +115,4 @@ def run(system: System, cfg: Config) -> History:
                 record(idx, step * cfg.dt, pos, vel)
                 idx += 1
 
-    return History(time, pos_hist, energy, ang_mom, mass)
+    return History(time, pos_hist, energy, kinetic, ang_mom, mass)
