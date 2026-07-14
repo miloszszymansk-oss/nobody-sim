@@ -1,0 +1,22 @@
+# VCS / CI
+.git
+.github
+# caches
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+*.egg-info
+.venv
+# heavy regenerable outputs (the image produces its own)
+experiments/out
+benchmarks/out
+figures
+# frontend is deployed via Pages, not the container
+visualization
+# local noise
+.DS_Store
+SPEC.md
+README.md
+tests

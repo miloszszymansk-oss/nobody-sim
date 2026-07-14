@@ -265,6 +265,16 @@ Jeden plik, zero zależności (decyzja: Tailwind-CDN odrzucony — odtwarzacz mu
 
 **Analityka w locie:** prędkości NIE są w schemie — estymata różnicami centralnymi między próbkami (dokumentowane przybliżenie: uśrednienie po `record_every` kroków); uciekinierzy: |v| > 4×mediana klatki (odporna na ogony), rysowani bursztynem. Wykres T/V/E: T z pola `kinetic` (0.5 → opcjonalne w schemie), V = E − T po stronie JS; czerwony kursor czasu zsynchronizowany z `f`.
 
+## 10. Deployment & Developer Experience (D6)
+
+**Docker (`Dockerfile` + `.dockerignore`):** `python:3.11-slim`, jedna warstwa runtime (czysty Python — multi-stage nie daje nic). Kolejność COPY pod cache warstw: pyproject+src (rzadko się zmieniają, `pip install .`) → experiments+benchmarks (często). Non-root (`runner`), `MPLBACKEND=Agg`, katalogi wyników utworzone przed `USER`. Kontrakt uruchomienia: `ENTRYPOINT python` + `CMD experiments/exp_cluster.py` — default odpala zderzenie klastrów, a każdy skrypt repo działa jako override (`docker run --rm nbody-sim benchmarks/bench_scaling.py`). Wyniki wychodzą przez bind-mounty (`make docker-run`). `.dockerignore` tnie: VCS, cache'e, regenerowalne out/, visualization (frontend żyje na Pages, nie w obrazie), testy (obraz = runtime; testy kryje CI).
+
+**CI (`.github/workflows/ci.yml`)** — nadrobione minimum D5: job `test` (pip install -e .[dev] → pytest, Python 3.12, cache pip) blokujący; job `lint` (ruff) z `continue-on-error` DO PIERWSZEGO zielonego przebiegu — sandbox bez sieci nie mógł zweryfikować baseline'u ruff przed wysyłką; po potwierdzeniu ściągnąć flagę.
+
+**Pages (`.github/workflows/pages.yml`):** oficjalny łańcuch configure-pages → upload-pages-artifact(path: visualization) → deploy-pages, trigger: push na main + ręczny. `visualization/index.html` = redirect na player; dane demo commitowane w `visualization/data/` → auto-fetch działa na Pages bez CORS. WYMAGANY krok ręczny raz: Settings → Pages → Source: **GitHub Actions**.
+
+**Makefile — centrum sterowania:** help(default, auto-generowany z `##`) · install · test · lint · profile · simulate (+kopiuje świeży JSON do visualization/data) · figures (pełna regeneracja ~2 min) · serve (http.server dla playera — omija file:// CORS) · docker-build/run. Konwencja: każdy target ma jednolinijkowy opis `##`.
+
 ## 8. Decyzje (zamknięte w 0.2)
 
 1. Softening gromad: ε = 0.05·R/N^(1/3) — PRZYJĘTE.
@@ -272,6 +282,9 @@ Jeden plik, zero zależności (decyzja: Tailwind-CDN odrzucony — odtwarzacz mu
 3. Nazwa repo: `nbody-sim`. PRZYJĘTE.
 
 ## Changelog
+- 0.6 (D6: deployment & DX; D5-luka częściowo nadrobiona):
+  - §10: Docker, CI, Pages, Makefile — decyzje i kontrakty jak wyżej. Walidacja w sandboxie: YAML sparsowany, `make -n` czysty dla wszystkich targetów, `make help` renderuje; build obrazu NIEWERYFIKOWANY lokalnie (brak demona Docker w sandboxie) — do potwierdzenia `make docker-build` na maszynie właściciela.
+  - README przepisany do stanu faktycznego (wyniki z liczbami, quickstart przez make, layout, metoda). STAN D5: write-up techniczny NADAL BRAKUJE (docs/); CI-testy nadrobione tutaj. Licencji BRAK — decyzja właściciela (rekomendacja: MIT), pyproject bez pola license do czasu decyzji.
 - 0.5 (D4: odtwarzacz):
   - §9: architektura frontendu (stan, LERP na TypedArrays, kamera, 3 ścieżki ładowania). Decyzje vs brief: zero CDN (offline/file://), prędkości z różnic centralnych (schema nie niesie v), highlight uciekinierów progiem 4×mediana.
   - Schema: +opcjonalne pole `kinetic` [k] (History.kinetic, diagnostics.kinetic_energy); test round-trip sprawdza spójność V=E−T<0 dla orbity związanej. Dane demo: visualization/data/cluster_merger.json (4.1 MB, commitowane dla GitHub Pages).
