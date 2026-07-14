@@ -15,7 +15,7 @@ phase error enters linearly and the true orders 2 and 4 appear.
 
 import numpy as np
 
-from nbody.integrators import leapfrog_step, rk4_step
+from nbody.integrators import euler_cromer_step, leapfrog_step, rk4_step
 
 OMEGA = 2.0 * np.pi
 PERIOD = 1.0
@@ -52,6 +52,29 @@ def test_leapfrog_order_two():
 def test_rk4_order_four():
     slope = _slope(rk4_step, [10, 20, 40, 80])
     assert abs(slope - 4.0) < 0.2, f"RK4 convergence slope {slope:.3f}, expected 4.0±0.2"
+
+
+def test_euler_cromer_order_one():
+    slope = _slope(euler_cromer_step, [400, 800, 1600, 3200])
+    assert abs(slope - 1.0) < 0.1, f"Euler-Cromer convergence slope {slope:.3f}, expected 1.0±0.1"
+
+
+def test_euler_cromer_energy_bounded():
+    """Order 1 but symplectic: SHO energy error stays in an O(dt) band with no trend —
+    symplecticity and accuracy order are independent properties (SPEC §2)."""
+    accel = lambda pos: -OMEGA**2 * pos  # noqa: E731
+    pos = np.array([[X0, 0.0, 0.0]])
+    vel = np.zeros((1, 3))
+    dt = PERIOD / 500
+    err = []
+    e0 = 0.5 * OMEGA**2 * X0**2
+    for _ in range(50 * 500):
+        pos, vel = euler_cromer_step(pos, vel, dt, accel)
+        err.append(abs(0.5 * vel[0, 0] ** 2 + 0.5 * OMEGA**2 * pos[0, 0] ** 2 - e0) / e0)
+    err = np.array(err)
+    half = len(err) // 2
+    assert err.max() < 5e-2  # O(dt) band, dt = T/500
+    assert err[half:].max() < 1.5 * err[:half].max(), "energy error is trending"
 
 
 def test_rk4_more_accurate_short_term():

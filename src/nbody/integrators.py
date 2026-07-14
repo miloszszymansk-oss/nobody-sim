@@ -27,6 +27,22 @@ def leapfrog_step(
     return pos_next, vel_next
 
 
+def euler_cromer_step(
+    pos: np.ndarray, vel: np.ndarray, dt: float, accel_fn: AccelFn
+) -> tuple[np.ndarray, np.ndarray]:
+    """Semi-implicit (symplectic) Euler: kick then drift with the NEW velocity.
+
+    Order 1, symplectic. The pedagogically useful third data point (SPEC §2):
+    energy error is bounded like leapfrog's (no secular drift) but the band
+    scales as O(dt) instead of O(dt^2) — symplecticity and accuracy order are
+    independent properties. Explicit Euler (drift with the OLD velocity) is the
+    non-symplectic sibling that spirals outward; we do not ship it.
+    """
+    vel_next = vel + dt * accel_fn(pos)  # kick
+    pos_next = pos + dt * vel_next  # drift with updated velocity
+    return pos_next, vel_next
+
+
 def rk4_step(
     pos: np.ndarray, vel: np.ndarray, dt: float, accel_fn: AccelFn
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -40,4 +56,4 @@ def rk4_step(
     return pos_next, vel_next
 
 
-STEPPERS = {"leapfrog": leapfrog_step, "rk4": rk4_step}
+STEPPERS = {"leapfrog": leapfrog_step, "euler_cromer": euler_cromer_step, "rk4": rk4_step}

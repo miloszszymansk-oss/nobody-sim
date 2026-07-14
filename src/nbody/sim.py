@@ -28,6 +28,7 @@ class Config:
     eps: float = 0.0
     integrator: str = "leapfrog"  # key into integrators.STEPPERS
     force: str = "brute"  # backend for forces.make_accel
+    theta: float = 0.5  # Barnes-Hut opening angle (used when force="barnes_hut")
     record_every: int = 1
 
 
@@ -60,7 +61,7 @@ def run(system: System, cfg: Config) -> History:
     pos = np.asarray(system.pos, dtype=float).copy()
     vel = np.asarray(system.vel, dtype=float).copy()
     mass = np.asarray(system.mass, dtype=float).copy()
-    accel_fn = make_accel(mass, cfg.G, cfg.eps, cfg.force)
+    accel_fn = make_accel(mass, cfg.G, cfg.eps, cfg.force, theta=cfg.theta)
 
     k_samples = cfg.n_steps // cfg.record_every + 1
     time = np.empty(k_samples)

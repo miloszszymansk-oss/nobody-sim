@@ -41,11 +41,22 @@ def accel_brute(
 
 
 def make_accel(
-    mass: np.ndarray, G: float = G_ASTRO, eps: float = 0.0, backend: str = "brute"
+    mass: np.ndarray,
+    G: float = G_ASTRO,
+    eps: float = 0.0,
+    backend: str = "brute",
+    theta: float = 0.5,
+    leaf_size: int = 1,
 ) -> Callable[[np.ndarray], np.ndarray]:
-    """Factory returning accel_fn(pos) -> (N,3) for the chosen backend."""
+    """Factory returning accel_fn(pos) -> (N,3) for the chosen backend.
+
+    theta/leaf_size apply to the 'barnes_hut' backend only (SPEC §3);
+    theta = 0 makes Barnes-Hut exact (and pointless — use it in tests only).
+    """
     if backend == "brute":
         return lambda pos: accel_brute(pos, mass, G, eps)
     if backend == "barnes_hut":
-        raise NotImplementedError("Barnes-Hut lands on Day 2 (SPEC §3)")
+        from nbody.barnes_hut import accel_barnes_hut
+
+        return lambda pos: accel_barnes_hut(pos, mass, G, eps, theta=theta, leaf_size=leaf_size)
     raise ValueError(f"unknown force backend: {backend!r}")

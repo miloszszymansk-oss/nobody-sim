@@ -130,10 +130,11 @@ Przypadki brzegowe (testy D2): ciało wewnątrz komórki → zawsze otwieraj; po
 ```
 src/nbody/
 ├── bodies.py        # stan i generatory układów
-├── forces.py        # backendy sił: brute (D1), barnes_hut (D2)
-├── integrators.py   # leapfrog, rk4 — agnostyczne wobec fizyki
+├── forces.py        # backendy sił: brute (D1) + fabryka make_accel
+├── barnes_hut.py    # oktree + trawersal frontierowy, w pełni wektorowe (D2)
+├── integrators.py   # leapfrog, euler_cromer, rk4 — agnostyczne wobec fizyki
 ├── diagnostics.py   # energia, pęd, L, elementy orbitalne
-└── sim.py           # pętla symulacji + zapis historii
+└── sim.py           # pętla symulacji + zapis historii + eksport JSON
 ```
 
 ```python
@@ -236,6 +237,15 @@ nbody-sim/
 3. Nazwa repo: `nbody-sim`. PRZYJĘTE.
 
 ## Changelog
+- 0.3 (D2, zmiana nocna):
+  - §3 ZAIMPLEMENTOWANE, architektura inna niż podręcznikowa rekurencja (celowo): budowa drzewa POZIOMAMI na kluczach oktantowych (np.unique + bincount na komórkach zajętych), trawersal jako FRONTIER par (ciało, węzeł) przetwarzany poziom po poziomie czystymi operacjami tablicowymi. Powód: rekurencja per-ciało w Pythonie ma stałe ~10³× gorsze od numpy; wersja frontierowa utrzymuje O(N log N) przy stałych na poziomie C.
+  - Przypadki brzegowe wg kontraktu: koincydentne pozycje → bucket-leaf na max_depth=20 (limit int64 dla kluczy); bezpieczeństwo self-force: θ < 1/√3 gwarantuje, że zaakceptowany węzeł nie zawiera celu (max odległość COM-narożnik = s√3); θ=0 ≡ brute co do kolejności sumowania (test: 1e-12).
+  - UWAGA fizyczna: siła BH nie jest parami antysymetryczna → pęd zachowany tylko do O(błędu siły); T2 (III zasada) dotyczy wyłącznie brute.
+  - T9 skalibrowane z pomiaru (gromada 10³, θ=0.5): mediana błędu 5.3·10⁻³, p99 2.6·10⁻² → progi: mediana < 1e-2, p99 < 5e-2. Metryka max ODRZUCONA świadomie (eksploduje przy kasowaniu się sił: 15% na ciele o niemal zerowej sile wypadkowej). Dodany test WŁASNOŚCI: skalowanie błędu z θ — obserwowane ~θ³ (5.8e-4 / 5.3e-3 / 2.1e-2 dla θ=0.25/0.5/0.8), lepsze niż podręcznikowe (s/d)², bo d liczone do COM zeruje dipol. Do write-upu.
+  - Test energii BH: pierwsza wersja całkowała zimną kulę PRZEZ kolaps (t_ff≈0.18 przy G=4π²) i mierzyła sztywność całkowania zamiast błędu drzewa. Poprawka: horyzont pre-kolaps t=0.1; kontrola: BH 7.9e-4 vs brute 1.2e-3 — monopol nie psuje zachowania energii.
+  - §2: dodany euler_cromer (symplektyczny Euler, rząd 1) — trzeci punkt danych: symplektyczność ⊥ rząd dokładności (pasmo O(dt) bez trendu; testy: nachylenie 1.00, pasmo bez dryfu). STEPPERS: leapfrog | euler_cromer | rk4.
+  - §6.3 WYNIK (figures/scaling.png, benchmarks/out/): przecięcie brute/BH przy N≈1.07·10³; N=3000: BH 2.0× szybszy (81 ms vs 163 ms); N=3·10⁴: BH 1.32 s/eval (brute: niewykonalne pamięciowo). Skalowanie BH lekko ponad N log N (koszt sortowań przy budowie) — kandydat do profilingu D3.
+  - Config: +theta (0.5); make_accel: +theta, +leaf_size. Suita: 23/23.
 - 0.2 (D1, po implementacji):
   - §8: decyzje zamknięte (ε-heurystyka, wizualizacja = eksport + odtwarzacz, nazwa repo).
   - §4.2: `sim.run` ma szybką ścieżkę leapfrog (cache przyspieszenia: 1 wywołanie accel/krok zamiast 2; kick zamykający kroku n = kick otwierający n+1). Matematycznie identyczna z referencyjnym `leapfrog_step` — wymuszone testem równości bitowej.
