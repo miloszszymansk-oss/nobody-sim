@@ -77,6 +77,58 @@ def uniform_cluster(n: int, radius: float, total_mass: float, seed: int = 0) -> 
     return to_barycentric(System(pos, vel, mass))
 
 
+def plummer_sphere(
+    n: int, total_mass: float, scale_radius: float, seed: int = 0, G: float = G_ASTRO
+) -> System:
+    """Plummer (1911) sphere in virial equilibrium — the standard star-cluster model.
+
+    Density: rho(r) = (3M / 4 pi a^3) (1 + r^2/a^2)^(-5/2);
+    enclosed mass M(<r) = M r^3 / (r^2 + a^2)^(3/2).
+
+    Sampling (Aarseth, Henon & Wielen 1974 recipe):
+      radius   — inverse CDF of M(<r): with u ~ U(0,1), r = a / sqrt(u^(-2/3) - 1),
+                 resampling the far tail (r > 10a) to keep the box compact;
+      velocity — isotropic ergodic DF f(E) ~ (-E)^(7/2) reduces, with q = v/v_esc,
+                 to g(q) = q^2 (1 - q^2)^(7/2); sampled by rejection under the box
+                 g_max = g(sqrt(2/9)) ~ 0.0921; v_esc(r) = sqrt(2 G M) (r^2+a^2)^(-1/4);
+      both direction vectors isotropic; final state shifted to the barycentric frame.
+
+    Expected diagnostics (tested): virial ratio 2T/|W| ~ 1 with W = -(3 pi / 32) G M^2 / a;
+    half-mass radius r_h = a / sqrt(2^(2/3) - 1) ~ 1.3048 a.
+    """
+    rng = np.random.default_rng(seed)
+    # --- radii by inverse transform, tail-resampled
+    r = np.empty(n)
+    todo = np.ones(n, dtype=bool)
+    while todo.any():
+        u = rng.random(int(todo.sum()))
+        cand = scale_radius / np.sqrt(u ** (-2.0 / 3.0) - 1.0)
+        r[todo] = cand
+        todo[todo] = cand > 10.0 * scale_radius
+    # --- isotropic positions
+    dirs = rng.normal(size=(n, 3))
+    dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    pos = dirs * r[:, None]
+    # --- speeds by rejection on g(q) = q^2 (1-q^2)^{7/2}, q = v/v_esc
+    g_max = (2.0 / 9.0) * (7.0 / 9.0) ** 3.5  # g at q* = sqrt(2/9), ~0.0921
+    q = np.empty(n)
+    todo = np.ones(n, dtype=bool)
+    while todo.any():
+        k = int(todo.sum())
+        qc = rng.random(k)
+        y = rng.random(k) * g_max
+        ok = y < qc**2 * (1.0 - qc**2) ** 3.5
+        idx = np.nonzero(todo)[0]
+        q[idx[ok]] = qc[ok]
+        todo[idx[ok]] = False
+    v_esc = np.sqrt(2.0 * G * total_mass) * (r**2 + scale_radius**2) ** -0.25
+    vdirs = rng.normal(size=(n, 3))
+    vdirs /= np.linalg.norm(vdirs, axis=1, keepdims=True)
+    vel = vdirs * (q * v_esc)[:, None]
+    mass = np.full(n, total_mass / n)
+    return to_barycentric(System(pos, vel, mass))
+
+
 def to_barycentric(s: System) -> System:
     """Shift to the center-of-mass frame: COM at origin, total momentum exactly zero."""
     m = s.mass

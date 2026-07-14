@@ -69,6 +69,27 @@ def _ragged_arange(counts: np.ndarray) -> np.ndarray:
     return np.arange(total) - np.repeat(ends - counts, counts)
 
 
+def _group_keys(keys: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(unique_sorted, inverse, counts, order) with ONE sort.
+
+    Profiling (D3, changelog 0.4) showed the build spent its time in two sorts per
+    level: np.unique (sorts internally) + a separate argsort for the leaf CSR.
+    This helper derives everything np.unique gave us from a single argsort and
+    returns `order` so the CSR grouping reuses it instead of sorting again.
+    """
+    order = np.argsort(keys, kind="stable")
+    sk = keys[order]
+    new = np.empty(sk.shape[0], dtype=bool)
+    new[0] = True
+    np.not_equal(sk[1:], sk[:-1], out=new[1:])
+    starts = np.nonzero(new)[0]
+    u = sk[starts]
+    cnt = np.diff(np.append(starts, sk.shape[0]))
+    inv = np.empty(order.shape[0], dtype=np.int64)
+    inv[order] = np.repeat(np.arange(u.shape[0]), cnt)
+    return u, inv, cnt, order
+
+
 def build_octree(pos: np.ndarray, mass: np.ndarray, leaf_size: int = 1) -> Octree:
     """Level-synchronous octree build over occupied cells only (SPEC §3)."""
     n = pos.shape[0]
@@ -108,10 +129,11 @@ def build_octree(pos: np.ndarray, mass: np.ndarray, leaf_size: int = 1) -> Octre
         m = mass[active]
         bits = p > centers  # (A,3) octant bits
         digit = bits[:, 0] + 2 * bits[:, 1] + 4 * bits[:, 2]
-        keys = keys * 8 + digit
-        centers = centers + (bits * 2.0 - 1.0) * (half0 / 2.0**depth)
+        keys *= 8
+        keys += digit
+        centers += (bits * 2.0 - 1.0) * (half0 / 2.0**depth)
 
-        u, inv, cnt = np.unique(keys, return_inverse=True, return_counts=True)
+        u, inv, cnt, order = _group_keys(keys)
         c_mass = np.bincount(inv, weights=m)
         c_com = np.stack(
             [np.bincount(inv, weights=m * p[:, k]) / c_mass for k in range(3)], axis=1
@@ -125,8 +147,7 @@ def build_octree(pos: np.ndarray, mass: np.ndarray, leaf_size: int = 1) -> Octre
         right = np.searchsorted(parent_of_u, prev_keys, side="right")
         _assign_children(child_start_l, child_count_l, prev_ids, n_nodes + left, right - left)
 
-        # bucket-leaf CSR for this level (bodies sorted by key keep cell grouping)
-        order = np.argsort(keys, kind="stable")
+        # bucket-leaf CSR for this level (reuses `order` from _group_keys — no second sort)
         leaf_body_mask_sorted = c_leaf[inv[order]]
         lb = active[order][leaf_body_mask_sorted]
         leaf_cnt = np.where(c_leaf, cnt, 0)

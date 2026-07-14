@@ -40,12 +40,26 @@ class History:
     angular_momentum: np.ndarray  # (K,3)
     mass: np.ndarray  # (N,)
 
-    def to_json(self, path: str, decimals: int = 5) -> None:
-        """Compact trajectory export for the HTML player (viz decision §8.2: option a)."""
+    def to_json(self, path: str, decimals: int = 4, meta: dict | None = None) -> None:
+        """Export in the `nbody-history/1` schema (SPEC §4.4) for the HTML player.
+
+        Design for fast browser parsing: numeric payloads are FLAT arrays, not nested
+        lists — JS does `Float64Array.from(j.pos)` once, no per-step object churn.
+        Layout: pos[(k*n + i)*3 + c] = coordinate c of body i at sample k
+        (step-major, body-minor, xyz). energy has length K, angular_momentum 3K.
+        `decimals` trades file size for precision (4 -> ~6 bytes/number).
+        """
+        k, n = self.time.shape[0], self.mass.shape[0]
         payload = {
+            "schema": "nbody-history/1",
+            "n": n,
+            "k": k,
+            "meta": meta or {},
             "time": np.round(self.time, decimals).tolist(),
             "mass": self.mass.tolist(),
-            "pos": np.round(self.pos, decimals).tolist(),
+            "pos": np.round(self.pos, decimals).ravel().tolist(),
+            "energy": self.energy.tolist(),
+            "angular_momentum": np.round(self.angular_momentum, 10).ravel().tolist(),
         }
         with open(path, "w") as f:
             json.dump(payload, f, separators=(",", ":"))

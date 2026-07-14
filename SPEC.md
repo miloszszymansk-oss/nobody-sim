@@ -180,6 +180,23 @@ v_p = √( μ(1+e) / (a(1−e)) )     # prędkość styczna (z vis-viva)
 ```
 oraz do `orbital_elements`: 1/a = 2/|r| − v²/μ (vis-viva), e z wektora ekscentryczności **e** = (**v**×**l**)/μ − **r̂**, gdzie **l** = **r**×**v**. Sprawdź vis-vivę na papierze z zasady zachowania energii — licealne przekształcenie.
 
+### 4.2b Format eksportu historii: `nbody-history/1` (D3, dla odtwarzacza D4)
+
+JSON z PŁASKIMI tablicami liczb (zero zagnieżdżonych obiektów per krok) — w JS parsuje się raz przez `Float64Array.from(j.pos)`:
+
+| pole | typ/kształt | uwaga |
+|---|---|---|
+| schema | "nbody-history/1" | wersjonowanie kontraktu |
+| n, k | int | liczba ciał, liczba próbek |
+| meta | obiekt | parametry eksperymentu (G, eps, theta, dt, ...) |
+| time | [k] | czasy próbek |
+| mass | [n] | masy |
+| pos | [k·n·3] płaska | pos[(k·n + i)·3 + c]: krok-major, ciało-minor, xyz |
+| energy | [k] | energia całkowita (z eps jak w siłach, §1.2) |
+| angular_momentum | [k·3] płaska | wektor L |
+
+`decimals` (domyślnie 4) kontroluje rozmiar pliku (~6 B/liczbę).
+
 ### 4.3 Wydajność (świadome decyzje)
 
 Brute force przez broadcasting tworzy tablicę (N,N,3): dla N = 2000 to ~100 MB — OK; dla N = 5000 ~600 MB — za dużo. Kontrakt: brute wspiera N ≤ 3000, powyżej — komunikat kierujący na Barnes-Hut. Chunking i numba: dopiero po profilingu (D3), z benchmarkiem przed/po. Zasada: żadnej optymalizacji bez pomiaru.
@@ -209,7 +226,13 @@ Zasada tolerancji: pierwszy przebieg pokazuje realny błąd → ustawiamy próg 
 1. `exp_energy_drift.py` — §2.3: leapfrog vs RK4, e = 0.9, długi horyzont.
 2. `exp_convergence.py` — błąd vs dt (log-log) dla obu integratorów + koszt (liczba wywołań accel) vs błąd: "RK4 bywa tańszy na krótko, leapfrog wygrywa na długo".
 3. `exp_scaling.py` (D3) — czas kroku vs N: brute ~N², BH ~N log N; punkt przecięcia.
-4. `exp_cluster.py` (D3/D4) — kolaps zimnej kuli 10³ ciał: wizualna nagroda + test ε w praktyce.
+4. `exp_cluster.py` (D3) — ZREALIZOWANE jako zderzenie dwóch sfer Plummera (ambitniejsze niż pierwotny kolaps zimnej kuli; kolaps został testem jednostkowym energii BH).
+   Matematyka próbkowania Plummera (sekcja referencyjna do write-upu):
+   - gęstość ρ(r) = (3M/4πa³)(1+r²/a²)^{-5/2}; masa skumulowana M(<r) = M·r³/(r²+a²)^{3/2};
+   - promień: odwrócenie CDF → r = a/√(u^{-2/3}−1), u~U(0,1), ogon r>10a repróbkowany;
+   - prędkość: ergodyczna f(E) ∝ (−E)^{7/2} ⇒ dla q=v/v_esc: g(q) ∝ q²(1−q²)^{7/2}, akceptacja-odrzucenie pod g_max = g(√(2/9)); v_esc = √(2GM)·(r²+a²)^{-1/4};
+   - testy samplera: 2T/|W| ≈ 1 (W = −(3π/32)GM²/a), r_połowy masy = a/√(2^{2/3}−1) ≈ 1.305a, v ≤ v_esc.
+   Scenariusz: M=2×0.5, a=0.5, separacja d=3, parametr zderzenia b=0.4, v_rel=3 (E_orb=−2.16 < 0 ⇒ związany), N=800, dt=1.25e-3, BH θ=0.5, ε wg §8.1.
 
 ---
 
@@ -237,6 +260,15 @@ nbody-sim/
 3. Nazwa repo: `nbody-sim`. PRZYJĘTE.
 
 ## Changelog
+- 0.4 (D3: profiling, Plummer, eksport JSON):
+  - PROFILING (benchmarks/profile_bh.py, raport w benchmarks/out/): metodologia = cProfile/pstats + A/B na identycznych wejściach. DWIE hipotezy sfalsyfikowane pomiarem:
+    (1) hipoteza briefu "sortowanie dominuje budowę": grouping przyspieszony 2.52× (jeden argsort zamiast unique+argsort, `_group_keys` reużywa `order` w CSR), ALE build to 2% pełnego accel, sortowania 1.0% całości — zysk realny, wpływ marginalny;
+    (2) hipoteza "większe bucket-leaves przyspieszą trawersal": sweep leaf_size∈{1..64} @ N=3000: 144.6→313.7 ms (wolniej!), za to p99 błędu 1.51e-2→2.76e-3. Wniosek: leaf_size zostaje 1 (szybkość), dokumentowany jako pokrętło dokładność/koszt.
+    Prawdziwy hotspot: own-time trawersalu 75.1% (fancy indexing + alokacje masek per poziom); kandydat na numba/persistent buffers PO maratonie — wpis do roadmapy, nie grzebiemy dalej bez potrzeby.
+  - bodies.plummer_sphere: sampler Plummera (matematyka w §6.4), 4 testy statystyczne zielone (wiriał 2T/|W|∈(0.85,1.15) obserwowany ~1.0).
+  - History.to_json → schema `nbody-history/1` (§4.2b), round-trip test.
+  - exp_cluster (§6.4): merger związany, 1600 kroków, 33 s wall; energia |ΔE/E| do 4.3e-2 — budżet błędu zdominowany przez bliskie spotkania w gęstym rdzeniu (skok w pierwszych krokach relaksacji + wzrost przy pierwszym przejściu); remedia poza zakresem D3: mniejszy dt / większe ε / krok adaptacyjny (§2.3-notatka). figures/cluster_merger.png + JSON dla odtwarzacza D4.
+  - Suita: 30/30.
 - 0.3 (D2, zmiana nocna):
   - §3 ZAIMPLEMENTOWANE, architektura inna niż podręcznikowa rekurencja (celowo): budowa drzewa POZIOMAMI na kluczach oktantowych (np.unique + bincount na komórkach zajętych), trawersal jako FRONTIER par (ciało, węzeł) przetwarzany poziom po poziomie czystymi operacjami tablicowymi. Powód: rekurencja per-ciało w Pythonie ma stałe ~10³× gorsze od numpy; wersja frontierowa utrzymuje O(N log N) przy stałych na poziomie C.
   - Przypadki brzegowe wg kontraktu: koincydentne pozycje → bucket-leaf na max_depth=20 (limit int64 dla kluczy); bezpieczeństwo self-force: θ < 1/√3 gwarantuje, że zaakceptowany węzeł nie zawiera celu (max odległość COM-narożnik = s√3); θ=0 ≡ brute co do kolejności sumowania (test: 1e-12).
