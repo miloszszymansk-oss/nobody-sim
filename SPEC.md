@@ -282,6 +282,9 @@ Jeden plik, zero zależności (decyzja: Tailwind-CDN odrzucony — odtwarzacz mu
 3. Nazwa repo: `nbody-sim`. PRZYJĘTE.
 
 ## Changelog
+- 0.7 (D7: showcase):
+  - docs/ARTICLE.md — deep-dive EN do publikacji; rama narracyjna: spec-first z AI pair-engineerem, jawnie i w pierwszej osobie tylko tam, gdzie pierwsza osoba jest prawdziwa (decyzje, weryfikacja wyprowadzeń, kierowanie). Uzasadnienie: artykuł "bohaterskiego debugowania" niezgodny z faktycznym procesem nie przetrwałby jednego pytania na rozmowie technicznej; wersja transparentna jest do obrony w całości i ciekawsza rynkowo. docs/linkedin_post.md — skróty dystrybucyjne EN/PL z [LINK] do podmiany.
+  - Zawartość techniczna artykułu w 100% pokryta changelogiem 0.2–0.6 (trzy falsyfikacje, 1106 vs ~1100, θ³, zero-alloc LERP).
 - 0.6 (D6: deployment & DX; D5-luka częściowo nadrobiona):
   - §10: Docker, CI, Pages, Makefile — decyzje i kontrakty jak wyżej. Walidacja w sandboxie: YAML sparsowany, `make -n` czysty dla wszystkich targetów, `make help` renderuje; build obrazu NIEWERYFIKOWANY lokalnie (brak demona Docker w sandboxie) — do potwierdzenia `make docker-build` na maszynie właściciela.
   - README przepisany do stanu faktycznego (wyniki z liczbami, quickstart przez make, layout, metoda). STAN D5: write-up techniczny NADAL BRAKUJE (docs/); CI-testy nadrobione tutaj. Licencji BRAK — decyzja właściciela (rekomendacja: MIT), pyproject bez pola license do czasu decyzji.
